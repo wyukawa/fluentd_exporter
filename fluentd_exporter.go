@@ -11,6 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/log"
+	"github.com/prometheus/procfs"
 )
 
 const (
@@ -27,9 +28,9 @@ type Exporter struct {
 
 	scrapeFailures prometheus.Counter
 
-	cpuGauge *prometheus.GaugeVec
-	vszGauge *prometheus.GaugeVec
-	rssGauge *prometheus.GaugeVec
+	cpuTimeCounter      *prometheus.CounterVec
+	virtualMemoryGauge  *prometheus.GaugeVec
+	residentMemoryGauge *prometheus.GaugeVec
 }
 
 func NewExporter() (*Exporter, error) {
@@ -39,27 +40,27 @@ func NewExporter() (*Exporter, error) {
 			Name:      "exporter_scrape_failures_total",
 			Help:      "Number of errors while scraping apache.",
 		}),
-		cpuGauge: prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
+		cpuTimeCounter: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
 				Namespace: namespace,
-				Name:      "cpu_usage",
-				Help:      "fluentd cpu usage",
+				Name:      "cpu_time",
+				Help:      "fluentd cpu time",
 			},
 			[]string{"conf_name"},
 		),
-		vszGauge: prometheus.NewGaugeVec(
+		virtualMemoryGauge: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
-				Name:      "vsz_usage",
-				Help:      "fluentd vsz usage",
+				Name:      "virtual_memory_usage",
+				Help:      "fluentd virtual memory usage",
 			},
 			[]string{"conf_name"},
 		),
-		rssGauge: prometheus.NewGaugeVec(
+		residentMemoryGauge: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Namespace: namespace,
-				Name:      "rss_usage",
-				Help:      "fluentd rss usage",
+				Name:      "resident_memory_usage",
+				Help:      "fluentd resident memory usage",
 			},
 			[]string{"conf_name"},
 		),
@@ -69,16 +70,17 @@ func NewExporter() (*Exporter, error) {
 // Describe implements the prometheus.Collector interface.
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.scrapeFailures.Describe(ch)
-	e.cpuGauge.Describe(ch)
-	e.vszGauge.Describe(ch)
-	e.rssGauge.Describe(ch)
+	e.cpuTimeCounter.Describe(ch)
+	e.virtualMemoryGauge.Describe(ch)
+	e.residentMemoryGauge.Describe(ch)
 }
 
 func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
 
-	out, psErr := exec.Command("ps", "-C", "ruby", "-f").Output()
-	if psErr != nil {
-		log.Fatal(psErr)
+	out, err := exec.Command("ps", "-C", "ruby", "-f").Output()
+	if err != nil {
+		log.Fatal(err)
+		return err
 	}
 
 	fluentdConfNames := make(map[string]struct{})
@@ -91,43 +93,45 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
 	}
 
 	for fluentdConfName := range fluentdConfNames {
-		out, pgrepErr := exec.Command("pgrep", "-n", "-f", fluentdConfName).Output()
-		if pgrepErr != nil {
-			log.Fatal(pgrepErr)
+		out, err := exec.Command("pgrep", "-n", "-f", fluentdConfName).Output()
+		if err != nil {
+			log.Fatal(err)
+			return err
 		}
-		targetPid := strings.TrimSpace(string(out))
+		targetPid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+		if err != nil {
+			log.Fatal(err)
+			return err
+		}
+
 		name := strings.TrimSpace(strings.Replace(fluentdConfName, ".conf", "", 1))
-		out, pidstatErr := exec.Command("pidstat", "-h", "-u", "-r", "-p", targetPid, "5", "1").Output()
-		if pidstatErr != nil {
-			log.Fatal(pidstatErr)
+
+		procfsPath := procfs.DefaultMountPoint
+		fs, err := procfs.NewFS(procfsPath)
+		if err != nil {
+			log.Fatal(err)
+			return err
 		}
-
-		for i, line := range strings.Split(string(out), "\n") {
-			if i == 3 {
-				parts := strings.Fields(line)
-				cpu, err := strconv.ParseFloat(parts[5], 64)
-				if err != nil {
-					log.Fatal(err)
-				}
-				e.cpuGauge.WithLabelValues(name).Set(cpu)
-
-				vsz, err := strconv.ParseFloat(parts[9], 64)
-				if err != nil {
-					log.Fatal(err)
-				}
-				e.vszGauge.WithLabelValues(name).Set(vsz)
-
-				rss, err := strconv.ParseFloat(parts[10], 64)
-				if err != nil {
-					log.Fatal(err)
-				}
-				e.rssGauge.WithLabelValues(name).Set(rss)
-			}
+		proc, err := fs.NewProc(targetPid)
+		if err != nil {
+			log.Fatal(err)
+			return err
 		}
+		procStat, err := proc.NewStat()
+		if err != nil {
+			log.Fatal(err)
+			return err
+		}
+		cpuTime := procStat.CPUTime()
+		e.cpuTimeCounter.WithLabelValues(name).Set(cpuTime)
+		virtualMemory := procStat.VirtualMemory()
+		e.virtualMemoryGauge.WithLabelValues(name).Set(float64(virtualMemory))
+		residentMemory := procStat.ResidentMemory()
+		e.residentMemoryGauge.WithLabelValues(name).Set(float64(residentMemory))
 	}
-	e.cpuGauge.Collect(ch)
-	e.vszGauge.Collect(ch)
-	e.rssGauge.Collect(ch)
+	e.cpuTimeCounter.Collect(ch)
+	e.virtualMemoryGauge.Collect(ch)
+	e.residentMemoryGauge.Collect(ch)
 
 	return nil
 }
