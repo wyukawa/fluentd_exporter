@@ -1,12 +1,10 @@
 # fluentd Exporter for Prometheus
 Exports fluentd result for Prometheus consumption.
 
-How to build
+How to build  
+(Dependency libraries have been included in the `vendor` directory using [dep](https://github.com/golang/dep))
 ```
-go get github.com/prometheus/client_golang/prometheus
-go get github.com/prometheus/log
-go get github.com/prometheus/procfs
-go build fluentd_exporter.go
+make
 ```
 
 Help on flags of fluentd_exporter:

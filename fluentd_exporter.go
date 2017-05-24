@@ -19,8 +19,9 @@ const (
 )
 
 var (
-	listenAddress = flag.String("web.listen-address", ":9224", "Address on which to expose metrics and web interface.")
-	metricsPath   = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+	listenAddress     = flag.String("web.listen-address", ":9224", "Address on which to expose metrics and web interface.")
+	metricsPath       = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+	fluentdConfRegexp = regexp.MustCompile("\\W([\\w\\.]+\\.conf)")
 )
 
 type Exporter struct {
@@ -86,9 +87,17 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
 	fluentdConfNames := make(map[string]struct{})
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "fluentd") == true && strings.Contains(line, ".conf") == true {
-			rep := regexp.MustCompile("\\W([\\w\\.]+\\.conf)")
-			groups := rep.FindStringSubmatch(line)
+			groups := fluentdConfRegexp.FindStringSubmatch(line)
 			fluentdConfNames[groups[1]] = struct{}{}
+		} else if strings.Contains(line, "td-agent") == true {
+			groups := fluentdConfRegexp.FindStringSubmatch(line)
+			var key string
+			if len(groups) == 0 {
+				key = "td-agent"
+			} else {
+				key = groups[1]
+			}
+			fluentdConfNames[key] = struct{}{}
 		}
 	}
 
